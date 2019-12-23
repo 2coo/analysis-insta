@@ -1,0 +1,6 @@
+jupyter
+pandas
+seaborn
+featuretools
+matplotlib
+graphviz
