@@ -1,5 +1,5 @@
 .DS_Store
 igs_files/
 igs_files.zip
-Data/
 Data.zip
+.env

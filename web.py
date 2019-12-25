@@ -7,14 +7,66 @@ import dash_html_components as html
 from dash.dependencies import Input, Output
 
 # data loader
-from utils.data_loaders import load_instagram_data
+from codes.utils.data_loader import load_fb_data
+import featuretools as ft
+import pandas as pd
 
-# Instagram data
-es = load_instagram_data(data_dir="Data")
+import dash_table
 
-external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']
 
-app = dash.Dash(__name__, external_stylesheets=external_stylesheets)
+es = load_fb_data(data_dir="data")
+
+adset_feature_matrix, feature_defs = ft.dfs(entityset=es,
+                                       target_entity="adset",
+                                       agg_primitives=["count", "sum", "mean"],
+                                       max_depth=1)
+adset_feature_matrix.rename(columns={"MEAN(report.duration)": "duration"}, inplace=True)
+adset_feature_matrix.rename(columns={"MEAN(report.lost_days)": "lost_days"}, inplace=True)
+targets = ['COUNT(beh)','COUNT(aud)', 'COUNT(demo)', 'COUNT(geo)', 'COUNT(int)']
+for adset_id, row in adset_feature_matrix.iterrows():
+    target_combination = []
+    for target in targets:
+        if row[target] > 0:
+            target_combination.append(target.replace("COUNT(", "").replace(")",""))
+    target_combination = sorted(target_combination)
+    if not target_combination:
+        target_combination = ["No target"]
+    adset_feature_matrix.at[adset_id, "target_combination"] = "; ".join(target_combination)
+df_adset = adset_feature_matrix.reset_index()[["account_id", "campaign_id", "adset_id", "campaign.objective", "target_combination", 'COUNT(report)', "duration", "lost_days", "SUM(report.imp)", "SUM(report.spend)", "COUNT(demo)", "COUNT(int)", "COUNT(beh)", "COUNT(geo)", "COUNT(aud)"]]
+df_adset["adset_id"] = df_adset["adset_id"].apply(str)
+df_adset["account_id"] = df_adset["account_id"].apply(str)
+df_adset["campaign_id"] = df_adset["campaign_id"].apply(str)
+df_adset.rename(columns={"campaign.objective": "objective", "COUNT(report)": "days", "SUM(report.imp)": "total_imp", "SUM(report.spend)": "total_spend"}, inplace=True)
+df_report = es["report"].df.copy()
+df_report["account_id"] = df_report["account_id"].apply(str)
+df_report["campaign_id"] = df_report["campaign_id"].apply(str)
+df_report["adset_id"] = df_report["adset_id"].apply(str)
+
+
+# Colors for legend
+colors = [
+    "#001f3f",
+    "#0074d9",
+    "#3d9970",
+    "#111111",
+    "#01ff70",
+    "#ffdc00",
+    "#ff851B",
+    "#ff4136",
+    "#85144b",
+    "#f012be",
+    "#b10dc9",
+    "#AAAAAA",
+    "#111111",
+]
+
+# Assign color to legend
+colormap = {}
+for ind, formation_name in enumerate(df_adset["objective"].unique().tolist()):
+    colormap[formation_name] = colors[ind]
+
+app = dash.Dash(__name__)
+
 
 styles = {
     'pre': {
@@ -24,113 +76,200 @@ styles = {
 }
 
 app.layout = html.Div([
-    dcc.Graph(
-        id='account',
-        figure={
-            'data': [
-                {
-                    'x': es["ad_account"].df["age"],
-                    'y': es["ad_account"].df["amount_spent"],
-                    #'name': row["id"],
-                    # "text": row["id"],
-                    'mode': 'markers',
-                    'marker': {'size': 12},
-                    'customdata': es["ad_account"].df.to_dict("r"),
-                }
-            ],
-            'layout': {
-                'clickmode': 'event+select'
-            }
-        }
-    ),
-    html.Div(className='row', children=[
-        html.Div([
-            dcc.Markdown(d("""
-                **Click Data**
+    html.Div(className="row", children=[
+        html.Div(className="seven columns", children=[
+                html.Div(className="row", children=[
+                    html.Div(className="four columns", children=[
+                        dcc.Dropdown(
+                            id='color_column',
+                            options=[
+                                {'label': 'Objective', 'value': 'objective'},
+                                {'label': 'Target combination', 'value': 'target_combination'}
+                            ],
+                            value='objective'
+                        ),
+                    ]),
+                    html.Div(className="five columns", children=[
+                        dcc.RadioItems(
+                            id="axis_type",
+                            options=[
+                                {'label': 'Linear', 'value': 'linear'},
+                                {'label': 'Log', 'value': 'log'},
+                            ],
+                            value='linear'
+                        )
+                    ])
+                ]),
+                html.Div(className="five columns", children=[
 
-                Click on points in the graph.
-            """)),
-            html.Pre(id='click-adv', style=styles['pre']),
-        ], className='three columns'),
+                ])
+        ])
     ]),
-    dcc.Graph(
-        id='basic-interactions',
-        figure={
-            'data': [
-                {
-                    'x': [1, 2, 3, 4],
-                    'y': [4, 1, 3, 5],
-                    'text': ['a', 'b', 'c', 'd'],
-                    'customdata': ['c.a', 'c.b', 'c.c', 'c.d'],
-                    'name': 'Trace 1',
-                    'mode': 'markers',
-                    'marker': {'size': 12}
+    html.Div(className="row", children=[
+        html.Div(className="seven columns", children=[
+            dcc.Graph(
+                id='adset',
+                figure={
+                    'data': [
+                        {
+                            'x': df_adset.query(f"objective == '{objective}'").total_spend,
+                            'y': df_adset.query(f"objective == '{objective}'").total_imp,
+                            'name': objective,
+                            "text": df_adset.query(f"objective == '{objective}'").adset_id,
+                            'mode': 'markers',
+                            'marker': {'size': 12},
+                            'customdata': [
+                                {
+                                    **dict_row,
+                                    "report_values": df_report[df_report["adset_id"] == str(dict_row["adset_id"])].sort_values(by="date")[["date", "day", "imp", "spend", "frequency"]].to_dict("r")
+                                }
+                                for dict_row in df_adset.query(f"objective == '{objective}'").to_dict("r")
+                            ],
+                        } for objective in list(df_adset["objective"].unique())
+                    ],
+                    'layout': {
+                        'clickmode': 'event+select'
+                    }
                 },
-                {
-                    'x': [1, 2, 3, 4],
-                    'y': [9, 4, 1, 4],
-                    'text': ['w', 'x', 'y', 'z'],
-                    'customdata': ['c.w', 'c.x', 'c.y', 'c.z'],
-                    'name': 'Trace 2',
-                    'mode': 'markers',
-                    'marker': {'size': 12}
-                }
-            ],
-            'layout': {
-                'clickmode': 'event+select'
-            }
-        }
-    ),
-
+                style={'height': '700px'}
+            )
+        ]),
+        html.Div(className="five columns", children=[
+            dcc.Graph(id='imp-spend', style={'height': '450px'}),
+            dcc.Graph(id='cpm'),
+        ]),
+    ]),
     html.Div(className='row', children=[
-        
-
-        html.Div([
             dcc.Markdown(d("""
-                **Click Data**
-
-                Click on points in the graph.
-            """)),
-            html.Pre(id='click-data', style=styles['pre']),
-        ], className='three columns'),
-
-        html.Div([
-            dcc.Markdown(d("""
-                **Selection Data**
-
-                Choose the lasso or rectangle tool in the graph's menu
-                bar and then select points in the graph.
-
-                Note that if `layout.clickmode = 'event+select'`, selection data also 
-                accumulates (or un-accumulates) selected data if you hold down the shift
-                button while clicking.
-            """)),
-            html.Pre(id='selected-data', style=styles['pre']),
-        ], className='three columns'),
-    ])
+                    **Cliked adset detail**
+                """)),
+            html.Div([
+                html.Pre(id='click-adset', style=styles['pre']),
+            ], className='five columns', style={"overflowX": "auto", "height": "500px"}),
+            html.Div(className="seven columns", children=[
+                dash_table.DataTable(
+                    id='table',
+                    columns=[{"name": i, "id": i} for i in ["adset_id","date", "spend", "imp"]],
+                    data=df_report[["adset_id","date", "spend", "imp"]].to_dict("rows"),
+                )
+            ], style={"overflowX": "auto", "height": "500px"})
+    ]),
 ])
+
+def create_lineplot(dff):
+    axis_type = "linear"
+    x_values = []
+    y_values = []
+    text = []
+    if dff is not None:
+        x_values = dff['spend'].cumsum()
+        y_values = dff['imp'].cumsum()
+        text = dff["date"]
+    return {
+        'data': [dict(
+            x=x_values,
+            y=y_values,
+            text=text,
+            mode='lines+markers'
+        )],
+        'layout': {
+            'height': 450,
+            'title': "Accumulated Spend vs Accumulated Impression",
+            'yaxis': {'type': 'linear' if axis_type == 'linear' else 'log'},
+            'xaxis': {'type': 'linear' if axis_type == 'linear' else 'log'}
+        }
+    }
+
+def create_barplot(dff):
+    x_values = []
+    y_values = []
+    if dff is not None:
+        x_values = dff["date"]
+        y_values = (dff['spend'].cumsum()/dff['imp'].cumsum()) * 1000
+    return {
+        'data': [dict(
+            x=x_values,
+            y=y_values,
+            type='bar'
+        )],
+        'layout': {
+            'height': 450,
+            'title': "CPM"
+        }
+    }
+
 @app.callback(
-    Output('click-adv', 'children'),
-    [Input('account', 'clickData')])
-def display_adv_data(clickData):
+    Output('adset', 'figure'),
+    [Input('color_column', 'value'),
+    Input('axis_type', 'value')])
+def display_adset(color_column, axis_type):
+    figure = {
+        'data': [
+                    {
+                        'x': df_adset.query(f"{color_column} == '{value}'").total_spend,
+                        'y': df_adset.query(f"{color_column} == '{value}'").total_imp,
+                        'name': value,
+                        "text": df_adset.query(f"{color_column} == '{value}'").adset_id,
+                        'mode': 'markers',
+                        'marker': {'size': 12},
+                        'customdata': [
+                            {
+                                **dict_row,
+                                "report_values": df_report[df_report["adset_id"] == str(dict_row["adset_id"])].sort_values(by="date")[["date", "day", "imp", "spend", "frequency"]].to_dict("r")
+                            }
+                            for dict_row in df_adset.query(f"{color_column} == '{value}'").to_dict("r")
+                        ],
+                    } for value in list(df_adset[color_column].unique())
+                ],
+        'layout': {
+                    'clickmode': 'event+select',
+                    'yaxis': {'type': 'linear' if axis_type == 'linear' else 'log'},
+                    'xaxis': {'type': 'linear' if axis_type == 'linear' else 'log'}
+                }
+        }
+    return figure
+
+
+@app.callback(
+    Output('click-adset', 'children'),
+    [Input('adset', 'clickData')])
+def display_adset_details(clickData):
     details = clickData
     if clickData and "points" in clickData:
         details = clickData["points"][0]["customdata"]
+        del details["report_values"]
     return json.dumps(details, indent=2)
 
 @app.callback(
-    Output('click-data', 'children'),
-    [Input('basic-interactions', 'clickData')])
-def display_click_data(clickData):
-    return json.dumps(clickData, indent=2)
+    dash.dependencies.Output('imp-spend', 'figure'),
+    [Input('adset', 'clickData')])
+def update_imp_spend(clickData):
+    data = None
+    if clickData:
+        data = pd.DataFrame(clickData['points'][0]['customdata']["report_values"])
+    return create_lineplot(data)
 
 
 @app.callback(
-    Output('selected-data', 'children'),
-    [Input('basic-interactions', 'selectedData')])
-def display_selected_data(selectedData):
-    return json.dumps(selectedData, indent=2)
+    dash.dependencies.Output('cpm', 'figure'),
+    [Input('adset', 'clickData')])
+def update_cpm(clickData):
+    data = None
+    if clickData:
+        data = pd.DataFrame(clickData['points'][0]['customdata']["report_values"])
+    return create_barplot(data)
 
+
+@app.callback(
+    dash.dependencies.Output('table', 'data'),
+    [Input('adset', 'clickData')])
+def update_datatable(clickData):
+    data = None
+    df = df_report[["adset_id", "date", "spend", "imp"]]
+    if clickData:
+        adset_id = clickData['points'][0]['customdata']["adset_id"]
+        df = df_report[df_report["adset_id"] == str(adset_id)].sort_values(by="date")[["adset_id", "date", "spend", "imp"]]
+    return (df.to_dict("r"))
 
 if __name__ == '__main__':
     app.run_server(debug=True)
